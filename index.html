@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Message Board</title>
+  <style>
+    body { font-family: Arial, "Noto Sans TC", sans-serif; margin: 0; background:#f6f7fb; }
+    .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 4px 14px rgba(0,0,0,.06); }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    label { display:block; font-weight: 600; margin: 12px 0 6px; }
+    textarea, input[type="text"] { width: 100%; padding: 10px; border: 1px solid #d7d9e0; border-radius: 8px; box-sizing: border-box; }
+    textarea { min-height: 90px; resize: vertical; }
+    .row { display:flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; cursor:pointer; font-weight: 700; }
+    .btn-primary { background:#2b6fff; color:#fff; }
+    .btn-secondary { background:#eef1ff; }
+    .muted { color:#6b7280; font-size: 13px; }
+    .preview { margin-top: 10px; display:none; }
+    .preview img { max-width: 280px; border-radius: 10px; border: 1px solid #e5e7eb; }
+    .posts { margin-top: 16px; display:grid; gap: 12px; }
+    .post { display:flex; gap: 12px; align-items:flex-start; }
+    .post img { width: 140px; height: 90px; object-fit: cover; border-radius: 10px; border: 1px solid #e5e7eb; background:#fff; }
+    .post .content { flex:1; }
+    .post .meta { margin-top: 6px; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f1f5ff; font-size: 12px; color:#3440ff; }
+    .error { color:#b91c1c; font-weight: 700; }
+    .ok { color:#166534; font-weight: 700; }
+    code { background:#f3f4f6; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>圖文留言板</h1>
+      <div class="muted">
+        API Base：<code id="apiBaseText"></code>
+      </div>
+
+      <label for="content">留言內容</label>
+      <textarea id="content" placeholder="輸入留言內容..."></textarea>
+
+      <label for="file">附圖（可選）</label>
+      <input id="file" type="file" accept="image/*" />
+
+      <div class="preview" id="previewBox">
+        <div class="muted">預覽：</div>
+        <img id="previewImg" alt="preview" />
+      </div>
+
+      <div style="margin-top:12px" class="row">
+        <button class="btn-primary" id="submitBtn">送出留言</button>
+        <button class="btn-secondary" id="refreshBtn">重新整理列表</button>
+        <span class="muted" id="status"></span>
+      </div>
+
+      <div class="muted" style="margin-top:10px">
+        小提醒：如果你前端跟 API 不同網域，可能需要後端開 CORS。
+      </div>
+    </div>
+
+    <div class="posts" id="posts"></div>
+  </div>
+
+  <script>
+    const API_BASE = "http://43.212.18.239";
+
+    document.getElementById("apiBaseText").textContent = API_BASE || "(same origin)";
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+    const postsEl = $("posts");
+    const fileEl = $("file");
+    const previewBox = $("previewBox");
+    const previewImg = $("previewImg");
+
+    function setStatus(msg, type = "muted") {
+      statusEl.className = type;
+      statusEl.textContent = msg;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      return iso.replace("T", " ").slice(0, 19);
+    }
+
+    fileEl.addEventListener("change", () => {
+      const file = fileEl.files?.[0];
+      if (!file) {
+        previewBox.style.display = "none";
+        previewImg.src = "";
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      previewImg.src = url;
+      previewBox.style.display = "block";
+    });
+
+    async function apiFetch(path, options = {}) {
+      const url = (API_BASE || "") + path;
+      const res = await fetch(url, options);
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { raw: text }; }
+      if (!res.ok) {
+        const detail = json?.detail || JSON.stringify(json);
+        throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      }
+      return json;
+    }
+
+    async function uploadImageIfNeeded() {
+      const file = fileEl.files?.[0];
+      if (!file) return null;
+
+      const form = new FormData();
+      form.append("file", file);
+
+
+      const json = await apiFetch("/api/upload", {
+        method: "POST",
+        body: form
+      });
+
+      return json?.data?.image_url || null;
+    }
+
+    async function createPost(content, imageUrl) {
+      const payload = { content, image_url: imageUrl };
+      const json = await apiFetch("/api/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      return json?.data;
+    }
+
+   function renderPosts(posts) {
+  postsEl.innerHTML = "";
+  if (!posts || posts.length === 0) {
+    postsEl.innerHTML = `<div class="card muted">目前還沒有留言</div>`;
+    return;
+  }
+
+  for (const p of posts) {
+    const imgHtml = p.image_url
+      ? `<img src="${p.image_url}" alt="post image" loading="lazy" />`
+      : `<div style="width:140px;height:90px;border-radius:10px;border:1px dashed #d1d5db;display:flex;align-items:center;justify-content:center;color:#9ca3af">無圖片</div>`;
+
+    const el = document.createElement("div");
+    el.className = "card post";
+    el.innerHTML = `
+      ${imgHtml}
+      <div class="content">
+        <div class="row" style="justify-content:space-between;">
+          <div class="pill">#${p.id}</div>
+          <button class="btn-secondary" data-del="${p.id}">刪除</button>
+        </div>
+        <div style="margin-top:6px; white-space:pre-wrap;">${escapeHtml(p.content)}</div>
+        <div class="meta muted">建立時間：${fmtTime(p.created_at)}</div>
+      </div>
+    `;
+
+    
+    const btn = el.querySelector(`[data-del="${p.id}"]`);
+    btn.addEventListener("click", async () => {
+      const ok = confirm(`確定要刪除留言 #${p.id} 嗎？`);
+      if (!ok) return;
+
+      setStatus(`刪除中 #${p.id}...`, "muted");
+      try {
+        await apiFetch(`/api/posts/${p.id}`, { method: "DELETE" });
+        await refreshPosts();
+        setStatus(`已刪除 #${p.id} ✅`, "ok");
+      } catch (err) {
+        console.error(err);
+        setStatus("刪除失敗：" + err.message, "error");
+      }
+    });
+
+    postsEl.appendChild(el);
+  }
+}
+
+
+    function escapeHtml(s) {
+      return (s ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function refreshPosts() {
+      setStatus("載入留言中...", "muted");
+      try {
+        const json = await apiFetch("/api/posts");
+        renderPosts(json.data);
+        setStatus("留言已更新", "ok");
+      } catch (err) {
+        console.error(err);
+        setStatus("載入失敗：" + err.message, "error");
+      }
+    }
+
+    $("refreshBtn").addEventListener("click", refreshPosts);
+
+    $("submitBtn").addEventListener("click", async () => {
+      const content = $("content").value.trim();
+      if (!content) {
+        setStatus("請先輸入留言內容", "error");
+        return;
+      }
+
+      $("submitBtn").disabled = true;
+      setStatus("上傳中...（有圖會先上傳圖）", "muted");
+
+      try {
+        const imageUrl = await uploadImageIfNeeded();
+        setStatus("寫入留言中...", "muted");
+        await createPost(content, imageUrl);
+
+
+        $("content").value = "";
+        fileEl.value = "";
+        previewBox.style.display = "none";
+        previewImg.src = "";
+
+        await refreshPosts();
+        setStatus("送出成功", "ok");
+      } catch (err) {
+        console.error(err);
+        setStatus("送出失敗：" + err.message, "error");
+      } finally {
+        $("submitBtn").disabled = false;
+      }
+    });
+
+
+    refreshPosts();
+  </script>
+</body>
+</html>
